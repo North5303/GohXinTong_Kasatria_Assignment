@@ -81,6 +81,23 @@
             position: relative;
         }
 
+        #data-error {
+            display: none;
+            position: absolute;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 200;
+            max-width: min(90vw, 720px);
+            padding: 12px 16px;
+            border: 1px solid #EF5022;
+            border-radius: 6px;
+            background: rgba(80, 15, 8, 0.95);
+            color: #fff;
+            font-size: 13px;
+            text-align: center;
+        }
+
         /* Bottom Format Switching Buttons */
         #menu {
             position: absolute;
@@ -231,6 +248,7 @@
     <!-- Screen 2: 3D Visualization Screen (Image B & C) -->
     <div id="app-view">
         <div id="canvas-container"></div>
+        <div id="data-error" role="alert"></div>
 
         <div id="menu">
             <button id="btn-table" class="nav-btn active">Table</button>
@@ -259,19 +277,24 @@
         // ==========================================
         // STEP B: GOOGLE SIGN-IN HANDLER
         // ==========================================
-        window.onload = function () {
-            if (window.google) {
-                google.accounts.id.initialize({
-                    client_id: GOOGLE_CLIENT_ID,
-                    callback: onGoogleLoginSuccess
-                });
-
-                google.accounts.id.renderButton(
-                    document.getElementById("google-btn-container"),
-                    {theme: "outline", size: "large", width: 250}
-                );
+        function initializeGoogleSignIn() {
+            if (!window.google || !window.google.accounts || !window.google.accounts.id) {
+                setTimeout(initializeGoogleSignIn, 100);
+                return;
             }
-        };
+
+            google.accounts.id.initialize({
+                client_id: GOOGLE_CLIENT_ID,
+                callback: onGoogleLoginSuccess
+            });
+
+            google.accounts.id.renderButton(
+                document.getElementById("google-btn-container"),
+                {theme: "outline", size: "large", width: 250}
+            );
+        }
+
+        window.addEventListener("load", initializeGoogleSignIn);
 
         function onGoogleLoginSuccess(response) {
             if (response && response.credential) {
@@ -293,32 +316,38 @@
                 dynamicTyping: true,
                 skipEmptyLines: true,
                 complete: function (results) {
-                    if (results.data && results.data.length > 0) {
-                        start3DVisualization(results.data);
-                    } else {
-                        fallbackData();
+                    if (!results.data || results.data.length === 0) {
+                        showDataError("The Google Sheet returned no records.");
+                        return;
                     }
+
+                    const normalizedRows = results.data.map(normalizeRow);
+                    if (normalizedRows.length < 200) {
+                        showDataError(`The Google Sheet returned ${normalizedRows.length} records; 200 are required.`);
+                        return;
+                    }
+
+                    start3DVisualization(normalizedRows);
                 },
                 error: function (err) {
-                    console.warn("Could not load CSV online, using backup test data.", err);
-                    fallbackData();
+                    console.error("Could not load CSV online.", err);
+                    showDataError("Could not load the Google Sheet. Check that the published CSV URL is accessible.");
                 }
             });
         }
 
-        function fallbackData() {
-            // 200 items fallback so table/grid layouts fill completely
-            const backup = [];
-            for (let i = 1; i <= 200; i++) {
-                backup.push({
-                    id: i,
-                    name: "Sample Person " + i,
-                    title: "Staff Member",
-                    netWorth: Math.floor(Math.random() * 250000) + 40000,
-                    image: `https://i.pravatar.cc/150?img=${(i % 70) + 1}`
-                });
-            }
-            start3DVisualization(backup);
+        function normalizeRow(row) {
+            const normalized = {};
+            Object.entries(row).forEach(([key, value]) => {
+                normalized[key.trim().toLowerCase().replace(/\s+/g, "_")] = value;
+            });
+            return normalized;
+        }
+
+        function showDataError(message) {
+            const errorBox = document.getElementById("data-error");
+            errorBox.textContent = message;
+            errorBox.style.display = "block";
         }
 
         // ==========================================
@@ -342,7 +371,7 @@
                 const item = items[i];
 
                 // Parse net worth number (handles "$120,000" or raw 120000)
-                let worthStr = String(item.netWorth || item.NetWorth || item["Net Worth"] || 0);
+                let worthStr = String(item.net_worth ?? 0);
                 let worth = Number(worthStr.replace(/[^0-9.-]+/g, "")) || 0;
 
                 const card = document.createElement("div");
@@ -357,28 +386,33 @@
                     card.classList.add("bg-green");
                 }
 
-                // Header: ID and formatted Net Worth
+                // Header: Country and Age, matching Image B
                 const top = document.createElement("div");
                 top.className = "card-header";
-                top.innerHTML = `<span>#${i + 1}</span><span>$${Math.round(worth / 1000)}K</span>`;
+                const country = document.createElement("span");
+                country.textContent = item.country || "-";
+                const age = document.createElement("span");
+                age.textContent = item.age ?? "-";
+                top.append(country, age);
                 card.appendChild(top);
 
                 // Avatar Image
                 const img = document.createElement("img");
                 img.className = "card-avatar";
-                img.src = item.image || item.Image || item.avatar || `https://i.pravatar.cc/150?img=${(i % 70) + 1}`;
+                img.src = item.photo || "";
+                img.alt = item.name || `Person ${i + 1}`;
                 card.appendChild(img);
 
                 // Name
                 const name = document.createElement("div");
                 name.className = "card-name";
-                name.textContent = item.name || item.Name || `Person ${i + 1}`;
+                name.textContent = item.name || `Person ${i + 1}`;
                 card.appendChild(name);
 
-                // Subtitle / Department / Role
+                // Subtitle: Interest, matching Image B
                 const role = document.createElement("div");
                 role.className = "card-role";
-                role.textContent = item.department || item.Department || item.role || item.Role || "Kasatria";
+                role.textContent = item.interest || "";
                 card.appendChild(role);
 
                 // Wrap into CSS3DObject
@@ -471,7 +505,7 @@
                 const target = new THREE.Object3D();
                 target.position.x = (xIndex * spacingX) - ((gridCols * spacingX) / 2) + (spacingX / 2);
                 target.position.y = -(yIndex * spacingY) + ((gridRows * spacingY) / 2) - (spacingY / 2);
-                target.position.z = (zIndex * spacingZ) - ((gridLayers * spacingZ) / 2);
+                target.position.z = (zIndex * spacingZ) - ((gridLayers * spacingZ) / 2) + (spacingZ / 2);
 
                 targets.grid.push(target);
             }
